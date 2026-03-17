@@ -1,13 +1,62 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
+<meta http-equiv="Content-Security-Policy" content="default-src * blob: data:; script-src * 'unsafe-inline' 'unsafe-eval' blob:; style-src * 'unsafe-inline'; connect-src *; img-src * blob: data:; worker-src * blob:; media-src * blob:;">
 <script>
-// Vérification auth — affiche écran de blocage si non connecté
-document.addEventListener('DOMContentLoaded', () => {
-  if (localStorage.getItem('pm_auth') !== '1') {
-    document.body.innerHTML = '<div style="position:fixed;inset:0;background:#0f0f0d;display:flex;align-items:center;justify-content:center;font-family:DM Mono,monospace;text-align:center;padding:20px"><div><div style="font-size:48px;margin-bottom:16px">🔒</div><div style="font-family:Fraunces,serif;font-size:22px;font-weight:900;color:#e8a045;margin-bottom:8px">Accès restreint</div><div style="font-size:13px;color:#7a7a6e;margin-bottom:24px">Connecte-toi depuis le hub</div><a href="index.html" style="padding:14px 28px;background:#e8a045;border-radius:12px;font-family:Fraunces,serif;font-size:16px;font-weight:700;color:#000;text-decoration:none">← Retour au hub</a></div></div>';
+// Guard — bloque l'accès si pas de permission
+document.documentElement.style.visibility = 'hidden';
+window.__guardPassed = undefined; // undefined = en cours, true = OK, false = bloqué
+
+(async () => {
+  const pm  = localStorage.getItem('pm_auth') === '1';
+  const sl  = localStorage.getItem('sl_auth') === '1';
+  const tok = localStorage.getItem('sl_access_token');
+
+  function showBlock(title, sub) {
+    document.documentElement.style.visibility = 'visible';
+    // Attendre que le body existe
+    const render = () => {
+      if (!document.body) { requestAnimationFrame(render); return; }
+      document.body.innerHTML = `<div style="position:fixed;inset:0;background:#0f0f0d;display:flex;align-items:center;justify-content:center;font-family:'DM Mono',monospace;text-align:center;padding:20px"><div><div style="font-size:48px;margin-bottom:16px">🚫</div><div style="font-family:'Fraunces',serif;font-size:22px;font-weight:900;color:#e8a045;margin-bottom:8px">${title}</div><div style="font-size:13px;color:#7a7a6e;margin-bottom:24px">${sub}</div><a href="index.html" style="padding:14px 28px;background:#e8a045;border-radius:12px;font-family:'Fraunces',serif;font-size:16px;font-weight:700;color:#000;text-decoration:none">← Retour au hub</a></div></div>`;
+    };
+    render();
   }
-});
+
+  function allow() {
+    window.__guardPassed = true;
+    document.documentElement.style.visibility = 'visible';
+  }
+
+  // Pas connecté du tout
+  if (!pm && !sl) {
+    showBlock('Accès restreint', 'Connecte-toi depuis le hub');
+    return;
+  }
+
+  // Connecté via Supabase → vérifier permission
+  if (tok && sl) {
+    const user = JSON.parse(localStorage.getItem('sl_user') || '{}');
+    // Admin/superadmin → accès libre
+    if (['superadmin','admin'].includes(user.role)) { allow(); return; }
+    if (!user.id) { allow(); return; }
+    try {
+      const r = await fetch(
+        'https://jeqptodorjzeyhapbmrz.supabase.co/rest/v1/permissions?user_id=eq.' + user.id + '&module=eq.transferts&actif=eq.true&select=id',
+        { headers: { 'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImplcXB0b2Rvcmp6ZXloYXBibXJ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM2NjI0ODksImV4cCI6MjA4OTIzODQ4OX0.j4JqeDnDMEghnBtKy5Knpb4QYDFEXiRtDeq7SSz3zWk', 'Authorization': 'Bearer ' + tok } }
+      );
+      const perms = await r.json();
+      if (!Array.isArray(perms) || perms.length === 0) {
+        showBlock('Module non activé', "Parle à Esteban pour obtenir l\'accès");
+        return;
+      }
+      allow();
+    } catch(e) { allow(); }
+    return;
+  }
+
+  // PIN uniquement → accès libre
+  allow();
+})();
 </script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -178,6 +227,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   .version-tag { position:fixed; bottom:66px; left:14px; font-size:10px; color:var(--border); letter-spacing:1px; z-index:50; }
 </style>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" crossorigin="anonymous"></script>
 </head>
 <body>
 
@@ -186,7 +236,10 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="logo-title">🔄 Transferts</div>
     <div class="logo-sub">Pâtisserie Manager</div>
   </div>
-  <a class="back-btn" href="index.html">← Hub</a>
+  <div style="display:flex;align-items:center;gap:8px">
+    <a class="back-btn" href="index.html">← Hub</a>
+    <button id="logout-btn" style="display:none;padding:7px 12px;background:transparent;border:1px solid var(--border);border-radius:8px;font-family:'DM Mono',monospace;font-size:11px;color:var(--muted);cursor:pointer;transition:all .15s" onclick="logoutModule()">↩</button>
+  </div>
 </header>
 
 <div class="tabs">
@@ -308,21 +361,23 @@ document.addEventListener('DOMContentLoaded', () => {
   <div class="modal">
     <div class="modal-title">✓ Valider le transfert</div>
     <div style="font-size:13px;color:var(--muted);margin-bottom:16px" id="valider-resume"></div>
-    <div style="display:flex;gap:10px;margin-bottom:16px">
-      <div style="flex:1">
-        <label class="form-label" style="margin-bottom:6px">Date du transfert</label>
-        <input id="date-transfert" class="form-input" type="date" style="margin-bottom:0">
-      </div>
-      <div style="flex:1">
-        <label class="form-label" style="margin-bottom:6px">Prix total (€)</label>
-        <input id="prix-total-input" class="form-input" type="number" step="0.01" min="0" placeholder="Ex : 12.50" style="margin-bottom:0">
-      </div>
+    <label class="form-label" style="margin-bottom:6px">Date du transfert</label>
+    <input id="date-transfert" class="form-input" type="date" style="margin-bottom:16px">
+
+    <!-- Prix décodé automatiquement depuis le code-barres du bon -->
+    <div id="prix-decode-wrap" style="display:none;margin-bottom:16px;padding:12px 16px;background:rgba(76,219,138,.08);border:1px solid rgba(76,219,138,.25);border-radius:10px">
+      <div style="font-size:10px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:4px">Prix total (décodé du code-barres)</div>
+      <div id="prix-decode-val" style="font-family:'Fraunces',serif;font-size:24px;font-weight:900;color:var(--green)"></div>
+    </div>
+    <div id="prix-manual-wrap" style="margin-bottom:16px">
+      <label class="form-label" style="margin-bottom:6px">Prix total (€) <span style="color:var(--muted);font-weight:400">— ou scanner le code-barres du bon</span></label>
+      <input id="prix-total-input" class="form-input" type="number" step="0.01" min="0" placeholder="Ex : 12.50" style="margin-bottom:0">
     </div>
     <label class="form-label" style="margin-bottom:6px">Note (optionnel)</label>
     <input id="note-transfert" class="form-input" type="text" placeholder="Ex : Urgent pour service midi" style="margin-bottom:16px">
     <label class="form-label" style="margin-bottom:6px">Code-barres du bon <span style="color:var(--muted);font-weight:400">(optionnel)</span></label>
     <div style="display:flex;gap:8px;margin-bottom:20px">
-      <input id="bon-barcode" class="form-input" type="text" placeholder="Scanner ou saisir le code…" style="flex:1">
+      <input id="bon-barcode" class="form-input" type="text" placeholder="Scanner ou saisir le code…" style="flex:1" oninput="decodePrixFromBarcode(this.value)">
       <button onclick="openBonScanner()" style="padding:12px 14px;background:var(--surface);border:1px solid var(--border);border-radius:10px;font-size:20px;" title="Scanner le bon">📷</button>
     </div>
     <div style="display:flex;gap:10px">
@@ -355,7 +410,7 @@ document.addEventListener('DOMContentLoaded', () => {
 </div>
 
 <div class="toast-container" id="toast-container"></div>
-<div class="version-tag">transferts v1.3 · 16/03/2026 06:24</div>
+<div class="version-tag">transferts v1.7 · 17/03/2026 16:54</div>
 
 <script>
 const API_URL = "https://script.google.com/macros/s/AKfycbz425iBOjYC8raof6W44y0IcJlCZHzjOrMzzjw0ju8uXFCKvFSl-xmYi9tZvOoSvP0aZg/exec";
@@ -420,6 +475,7 @@ function switchTab(tab, btn) {
 // ══════════════════════════════════════
 function buildRayonSelect() {
   const sel = document.getElementById('rayon-select');
+  if (!sel) return;
   sel.innerHTML = '<option value="">— Choisir un rayon —</option>' +
     rayons.map(r => `<option value="${r}" ${r===rayonActuel?'selected':''}>${r}</option>`).join('');
 }
@@ -570,6 +626,7 @@ function addArticle() {
 function renderPanier() {
   const list = document.getElementById('panier-list');
   const totalBar = document.getElementById('total-bar');
+  if (!list || !totalBar) return;
 
   if (!panier.length) {
     list.innerHTML = `<div style="text-align:center;padding:40px 20px;color:var(--muted)">
@@ -634,6 +691,8 @@ function validerTransfert() {
   document.getElementById('prix-total-input').value = '';
   document.getElementById('note-transfert').value = '';
   document.getElementById('bon-barcode').value = '';
+  document.getElementById('prix-decode-wrap').style.display = 'none';
+  document.getElementById('prix-manual-wrap').style.display = 'block';
   document.getElementById('modal-valider').style.display = 'flex';
   setTimeout(() => document.getElementById('prix-total-input').focus(), 100);
 }
@@ -862,13 +921,7 @@ function reopenBon(t) {
 // ══════════════════════════════════════
 // SCANNER
 // ══════════════════════════════════════
-function preloadScanner() {
-  if (document.getElementById('html5qr-script')) return;
-  const s = document.createElement('script');
-  s.id  = 'html5qr-script';
-  s.src = 'https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js';
-  document.head.appendChild(s);
-}
+function preloadScanner() { /* lib chargée statiquement dans le head */ }
 
 function openBonScanner() {
   // Réutilise le scanner modal, résultat → champ bon-barcode
@@ -946,7 +999,56 @@ async function init() {
   } catch(e) {}
 }
 
-init();
+// Attendre que le guard soit résolu ET que le DOM soit prêt
+function _runWhenReady() {
+  if (window.__guardPassed === true) {
+    init();
+  } else if (window.__guardPassed === false) {
+    // Bloqué — ne rien faire
+  } else {
+    // Guard encore en cours — réessayer
+    setTimeout(_runWhenReady, 50);
+  }
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', _runWhenReady);
+} else {
+  _runWhenReady();
+}
+// ── Décodage prix depuis code-barres interne ──
+// Règle : supprimer dernier chiffre (check digit),
+// prendre les 7 chiffres de droite, supprimer les zéros du début = centimes
+function decodePrixFromBarcode(code) {
+  const wrap       = document.getElementById('prix-decode-wrap');
+  const valEl      = document.getElementById('prix-decode-val');
+  const manualWrap = document.getElementById('prix-manual-wrap');
+  const prixInput  = document.getElementById('prix-total-input');
+
+  if (!code || code.length < 4) {
+    wrap.style.display = 'none';
+    manualWrap.style.display = 'block';
+    return;
+  }
+
+  // Supprimer le dernier chiffre (check digit)
+  const stripped = code.slice(0, -1);
+  // Prendre les 7 derniers chiffres (max 99999.99€)
+  const last7 = stripped.slice(-7);
+  // Supprimer les zéros du début → centimes
+  const centimes = parseInt(last7, 10);
+
+  if (!isNaN(centimes) && centimes > 0) {
+    const euros = (centimes / 100).toFixed(2);
+    valEl.textContent = parseFloat(euros).toLocaleString('fr-BE', {style:'currency', currency:'EUR'});
+    prixInput.value = euros;
+    wrap.style.display = 'block';
+    manualWrap.style.display = 'none';
+  } else {
+    wrap.style.display = 'none';
+    manualWrap.style.display = 'block';
+  }
+}
+
 </script>
 </body>
 </html>
